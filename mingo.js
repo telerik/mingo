@@ -275,7 +275,7 @@
         _.extend(this._operators, {"$project": this._projection});
       }
 
-      if (!_.isArray(this._collection)) {
+      if (!_.isArray(this._collection) && !_.isObject(this._collection)) {
         throw new Error("Input collection is not of valid type. Must be an Array.");
       }
 
@@ -1189,7 +1189,7 @@
       if (!_.isArray(expr)) {
         if (!_.isNumber(expr)) {
           throw new Error("Invalid type for $slice operator");
-        }
+      }
         expr = expr < 0 ? [expr] : [0, expr];
       } else {
         // MongoDB $slice works a bit differently from Array.slice
