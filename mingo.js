@@ -20,12 +20,14 @@
     return Mingo;
   };
 
-  var nodeEnabled = ('undefined' !== typeof exports && 'undefined' !== typeof require && 'undefined' !== typeof process);
-  var isNativeScriptEnabled = Boolean(((typeof android !== 'undefined' && android && android.widget && android.widget.Button)
-  || (typeof UIButton !== 'undefined' && UIButton)));
+  var nativeScriptEnabled = Boolean(((typeof android !== 'undefined' && android && android.widget && android.widget.Button)
+    || (typeof UIButton !== 'undefined' && UIButton)));
+
+  var nodeEnabled = ('undefined' !== typeof exports && 'undefined' !== typeof require && !nativeScriptEnabled);
+
 
   // Export the Mingo object for Node.js
-  if (nodeEnabled || isNativeScriptEnabled) {
+  if (nodeEnabled || nativeScriptEnabled) {
     if (typeof module !== 'undefined' && module.exports) {
       exports = module.exports = Mingo;
     } else {
