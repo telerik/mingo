@@ -21,13 +21,14 @@
   };
 
   var nativeScriptEnabled = Boolean(((typeof android !== 'undefined' && android && android.widget && android.widget.Button)
-    || (typeof UIButton !== 'undefined' && UIButton)));
+  || (typeof UIButton !== 'undefined' && UIButton)));
 
-  var nodeEnabled = ('undefined' !== typeof exports && 'undefined' !== typeof require && !nativeScriptEnabled);
+  var nodeEnabled = ('undefined' !== typeof exports && 'undefined' !== typeof require && 'undefind' === typeof window && !nativeScriptEnabled);
 
+  var browserifyEnabled = 'undefined' !== typeof exports && 'undefined' !== typeof require;
 
   // Export the Mingo object for Node.js
-  if (nodeEnabled || nativeScriptEnabled) {
+  if (nodeEnabled || nativeScriptEnabled || browserifyEnabled) {
     if (typeof module !== 'undefined' && module.exports) {
       exports = module.exports = Mingo;
     } else {
@@ -1193,7 +1194,7 @@
       if (!_.isArray(expr)) {
         if (!_.isNumber(expr)) {
           throw new Error("Invalid type for $slice operator");
-      }
+        }
         expr = expr < 0 ? [expr] : [0, expr];
       } else {
         // MongoDB $slice works a bit differently from Array.slice
@@ -1760,7 +1761,7 @@
       dateOperators,
       setOperators,
       stringOperators
-    );
+  );
 
   // mixin comparison operators
   _.each(["$eq", "$ne", "$gt", "$gte", "$lt", "$lte"], function (op) {
