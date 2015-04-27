@@ -23,7 +23,7 @@
   var nativeScriptEnabled = Boolean(((typeof android !== 'undefined' && android && android.widget && android.widget.Button)
   || (typeof UIButton !== 'undefined' && UIButton)));
 
-  var nodeEnabled = ('undefined' !== typeof exports && 'undefined' !== typeof require && 'undefind' === typeof window && !nativeScriptEnabled);
+  var nodeEnabled = ('undefined' !== typeof exports && 'undefined' !== typeof require && 'undefined' === typeof window && !nativeScriptEnabled);
 
   var browserifyEnabled = 'undefined' !== typeof exports && 'undefined' !== typeof require;
 
