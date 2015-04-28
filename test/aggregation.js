@@ -9,7 +9,7 @@ var students = JSON.parse(fs.readFileSync(__dirname + '/data/students.json'));
 var gradesSimple = JSON.parse(fs.readFileSync(__dirname + '/data/grades_simple.json'));
 
 
-test.only("Aggregation Pipeline Operators", function (t) {
+test("Aggregation Pipeline Operators", function (t) {
 
   t.test("$match operator", function (t) {
     t.plan(1);
