@@ -28,7 +28,7 @@ test("Aggregation Pipeline Operators", function (t) {
   });
 
   t.test("$project operator", function (t) {
-    t.plan(13);
+    t.plan(15);
     var result = Mingo.aggregate(
         students,
         [
@@ -133,6 +133,24 @@ test("Aggregation Pipeline Operators", function (t) {
     t.ok(fields.indexOf('name') >= 0, "name is included");
     t.ok(fields.indexOf('_id') === -1, "_id is excluded");
     t.ok(fields.indexOf('scores') >= 0, "score is included");
+    
+    try {
+        result = Mingo.aggregate(
+            students,
+            [
+              {
+                '$project': {
+                  'scores': 0,
+                  'name': 1
+                }
+              },
+              {'$limit': 1}
+            ]
+        );
+    } catch (e) {
+       t.ok(e instanceof Error, "an error was thrown");
+       t.ok(e.message.indexOf("mix") >= 0, "error mentions mix fields");
+    }
   });
 
   t.test("$group operator", function (t) {
