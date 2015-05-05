@@ -280,9 +280,9 @@
         _.extend(this._operators, {"$project": this._projection});
       }
 
-      if (!_.isArray(this._collection) && !_.isObject(this._collection)) {
-        throw new Error("Input collection is not of valid type. Must be an Array.");
-      }
+      // if (!_.isArray(this._collection) && !_.isObject(this._collection)) {
+      //   throw new Error("Input collection is not of valid type. Must be an Array.");
+      // }
 
       // filter collection
       this._result = _.filter(this._collection, this._query.test, this._query);
