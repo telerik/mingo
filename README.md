@@ -21,22 +21,35 @@ In browser
 
 ## Features
 - Supports Dot Notation for both '_&lt;array&gt;.&lt;index&gt;_' and '_&lt;document&gt;.&lt;field&gt;_' selectors
-- Comparisons Operators ($gt, $gte, $lt, $lte, $ne, $nin, $in)
-- Logical Operators ($and, $or, $nor, $not)
-- Evaluation Operators ($regex, $mod, $where)
-- Array Operators ($all, $elemMatch, $size)
-- Element Operators ($exists, $type)
-- Aggregation Pipeline Operators ($group, $match, $project, $sort, $limit, $unwind, $skip)
-- Conditional Operators ($cond, $ifNull)
-- Group Operators ($addToSet, $sum, $max, $min, $avg, $push, $first, $last)
-- Arithmetic Operators ($add, $divide, $mod, $multiply, $subtract)
-- String Operators ($cmp, $strcasecmp, $concat, $substr, $toLower, $toUpper)
-- Set Operators ($setEquals, $setIntersection, $setDifference, $setUnion, $setIsSubset, $anyElementTrue, $allElementsTrue)
-- Projection Operators ($elemMatch, $slice)
-- JSON stream filtering and projection. *_NodeJS only_*
+- Query and Projection Operators
+    - Array Operators (`$all`, `$elemMatch`, `$size`)
+    - Comparisons Operators (`$gt`, `$gte`, `$lt`, `$lte`, `$ne`, `$nin`, `$in`)
+    - Element Operators (`$exists`, `$type`)
+    - Evaluation Operators (`$regex`, `$mod`, `$where`)
+    - Logical Operators (`$and`, `$or`, `$nor`, `$not`)
+- Aggregation Framework Operators
+    - Pipeline Operators (`$group`, `$match`, `$project`, `$sort`, `$limit`, `$unwind`, `$skip`)
+    - Group Operators (`$addToSet`, `$sum`, `$max`, `$min`, `$avg`, `$push`, `$first`, `$last`)
+    - Projection Operators (`$elemMatch`, `$slice`)
+    - Arithmetic Operators (`$add`, `$divide`, `$mod`, `$multiply`, `$subtract`)
+    - Array Operators (`$size`)
+    - Boolean Operators (`$and`, `$or`, `$not`)
+    - Comparisons Operators (`$cmp`, `$gt`, `$gte`, `$lt`, `$lte`, `$ne`, `$nin`, `$in`)
+    - Conditional Operators (`$cond`, `$ifNull`)
+    - Date Operators (`$dayOfYear`, `$dayOfMonth`, `$dayOfWeek`, `$year`, `$month`, `$week`, `$hour`, `$minute`, `$second`, `$millisecond`, `$dateToString`)
+    - Literal Operators (`$literal`)
+    - Set Operators (`$setEquals`, `$setIntersection`, `$setDifference`, `$setUnion`, `$setIsSubset`, `$anyElementTrue`, `$allElementsTrue`)
+    - String Operators (`$strcasecmp`, `$concat`, `$substr`, `$toLower`, `$toUpper`)
+    - Variable Operators (`$map`, `$let`)
+- Support for custom operators
+- BackboneJS Integration
+- JSON stream filtering and projection. *NodeJS only*
+
+For documentation on using query operators see [mongodb](http://docs.mongodb.org/manual/reference/operator/query/)
+
 
 ## Usage
-```javascript
+```js
 
 var Mingo = require('mingo');
 // or just access *Mingo* global in browser
@@ -55,7 +68,7 @@ var query = new Mingo.Query({
 ```
 
 ## Searching and Filtering
-```javascript
+```js
 // filter collection with find()
 var cursor = query.find(collection);
 
@@ -86,7 +99,7 @@ var result = query.remove(collection);
 ```
 
 ## Aggregation Pipeline
-```javascript
+```js
 var agg = new Mingo.Aggregator([
     {'$match': { "type": "homework"}},
     {'$group':{'_id':'$student_id', 'score':{$min:'$score'}}},
@@ -116,15 +129,6 @@ var query = new Mingo.Query({
   scores: { $elemMatch: {type: "exam", score: {$gt: 90}} }
 }, {name: 1});
 
-// ex. [
-//      { "_id" : 11, "name" : "Marcus Blohm", "scores" : [
-//          { "type" : "exam", "score" : 78.42617835651868 },
-//          { "type" : "quiz", "score" : 82.58372817930675 },
-//          { "type" : "homework", "score" : 87.49924733328717 },
-//          { "type" : "homework", "score" : 15.81264595052612 } ]
-//      },
-//      ...
-//     ]
 file = fs.createReadStream('./students.json');
 
 var qs = query.stream();
@@ -134,11 +138,10 @@ qs.on('data', function (data) {
 });
 
 file.pipe(JSONStream.parse("*")).pipe(qs);
-
 ```
 
 ## Backbone Integration
-```javascript
+```js
 // using with Backbone
 var Grades = Backbone.Collection.extend(Mingo.CollectionMixin);
 
@@ -154,56 +157,13 @@ cursor = grades.query({
 cursor.first();
 ```
 
-For documentation on using query operators see [mongodb](http://docs.mongodb.org/manual/reference/operator/query/)
-
-## API
-### Mingo.Query(criteria, [projection])
-Creates a ```Mingo.Query``` object with the given query criteria
-- ```test(obj)``` Returns true if the object passes the query criteria, otherwise false.
-- ```find(collection, [projection])``` Performs a query on a collection and returns a ```Mingo.Cursor``` object.
-- ```remove(collection)``` Remove matching documents from the collection and return the remainder
-- ```stream()``` Return a ```Mingo.Stream``` to filter and transform JSON objects from a readable stream. *_NodeJS only_*
-
-### Mingo.Aggregator(expressions)
-Creates a ```Mingo.Aggregator``` object with a collection of aggregation pipeline expressions
-- ```run()``` Apply the pipeline operations over the collection by order of the sequence added
-
-### Mingo.Cursor(collection, query, [projection])
-Creates a ```Mingo.Cursor``` object which holds the result of applying the query over the collection
-- ```all()``` Returns all the matched documents in a cursor as a collection.
-- ```first()``` Returns the first documents in a cursor.
-- ```last()``` Returns the last document in a cursor
-- ```count()``` Returns a count of the documents in a cursor.
-- ```limit(n)``` Constrains the size of a cursor's result set.
-- ```skip(n)``` Returns a cursor that begins returning results only after passing or skipping a number of documents.
-- ```sort(modifier)``` Returns results ordered according to a sort specification.
-- ```next()``` Returns the next document in a cursor.
-- ```hasNext()``` Returns true if the cursor has documents and can be iterated.
-- ```max(expression)``` Specifies an exclusive upper index bound for a cursor
-- ```min(expression)``` Specifies an inclusive lower index bound for a cursor.
-- ```map(callback)``` Applies a function to each document in a cursor and collects the return values in an array.
-- ```forEach(callback)``` Applies a JavaScript function for every document in a cursor.
-
-### Mingo.Stream(query, [options]) - _NodeJS only_
-A Transform stream that can be piped from/to any readable/writable JSON stream.
-
-### Mingo.CollectionMixin
-A mixin object for ```Backbone.Collection``` which adds ```query()``` and ```aggregate()``` methods
-- ```query(criteria)``` Performs a query on the collection and returns a ```Mingo.Cursor``` object.
-- ```aggregate(expressions)``` Performs aggregation operation using the aggregation pipeline.
-
-### Mingo.find(collection, criteria, [projection])
-Performs a query on a collection and returns a ```Mingo.Cursor``` object.
-
-### Mingo.remove(collection, criteria)
-Returns the non-matched objects as a collection from executing a ```Mingo.Query``` with the given criteria
-
-### Mingo.aggregate(collection, expressions)
-Performs aggregation operation using the aggregation pipeline.
+## Documentation
+- [API](https://github.com/kofrasa/mingo/wiki/API)
+- [Custom Operators](https://github.com/kofrasa/mingo/wiki/Custom-Operators)
 
 ## TODO
- - Geospatial Query Operators ($geoWithin, $geoIntersects, $near, $nearSphere)
- - Geometry Specifiers ($geometry, $maxDistance, $center, $centerSphere, $box, $polygon)
+ - Geospatial Query Operators (`$geoWithin`, `$geoIntersects`, `$near`, `$nearSphere`)
+ - Geometry Specifiers (`$geometry`, `$maxDistance`, `$center`, `$centerSphere`, `$box`, `$polygon`)
 
 ## License
 MIT

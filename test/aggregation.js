@@ -1,19 +1,14 @@
 var test = require('tape'),
-    fs = require('fs'),
-    _ = require('underscore'),
-    JSON = require('JSON'),
-    Mingo = require('../mingo');
-
-
-var students = JSON.parse(fs.readFileSync(__dirname + '/data/students.json'));
-var gradesSimple = JSON.parse(fs.readFileSync(__dirname + '/data/grades_simple.json'));
+  _ = require('underscore'),
+  Mingo = require('../mingo'),
+  samples = require('./samples');
 
 
 test("Aggregation Pipeline Operators", function (t) {
 
   t.test("$match operator", function (t) {
     t.plan(1);
-    var result = Mingo.aggregate(students, [
+    var result = Mingo.aggregate(samples.students, [
       {'$match': {_id: {$in: [0, 1, 2, 3, 4]}}}
     ]);
     t.ok(result.length === 5, "can filter collection with $match");
@@ -21,29 +16,29 @@ test("Aggregation Pipeline Operators", function (t) {
 
   t.test("$unwind operator", function (t) {
     t.plan(1)
-    var flattened = Mingo.aggregate(students, [
+    var flattened = Mingo.aggregate(samples.students, [
       {'$unwind': '$scores'}
     ]);
     t.ok(flattened.length === 800, "can unwind array value in collection");
   });
 
   t.test("$project operator", function (t) {
-    t.plan(15);
+    t.plan(13);
     var result = Mingo.aggregate(
-        students,
-        [
-          {'$unwind': '$scores'},
-          {
-            '$project': {
-              'name': 1,
-              'type': '$scores.type',
-              'details': {
-                "plus10": {$add: ["$scores.score", 10]}
-              }
+      samples.students,
+      [
+        {'$unwind': '$scores'},
+        {
+          '$project': {
+            'name': 1,
+            'type': '$scores.type',
+            'details': {
+              "plus10": {$add: ["$scores.score", 10]}
             }
-          },
-          {'$limit': 1}
-        ]
+          }
+        },
+        {'$limit': 1}
+      ]
     );
 
     var fields = _.keys(result[0]);
@@ -99,15 +94,15 @@ test("Aggregation Pipeline Operators", function (t) {
     ], "can project with $cmp operator");
 
     result = Mingo.aggregate(
-        students,
-        [
-          {
-            '$project': {
-              'name': 0
-            }
-          },
-          {'$limit': 1}
-        ]
+      samples.students,
+      [
+        {
+          '$project': {
+            'name': 0
+          }
+        },
+        {'$limit': 1}
+      ]
     );
 
     fields = _.keys(result[0]);
@@ -117,15 +112,15 @@ test("Aggregation Pipeline Operators", function (t) {
     t.ok(fields.indexOf('scores') >= 0, "score is included");
 
     result = Mingo.aggregate(
-        students,
-        [
-          {
-            '$project': {
-              '_id': 0
-            }
-          },
-          {'$limit': 1}
-        ]
+      samples.students,
+      [
+        {
+          '$project': {
+            '_id': 0
+          }
+        },
+        {'$limit': 1}
+      ]
     );
 
     fields = _.keys(result[0]);
@@ -133,48 +128,55 @@ test("Aggregation Pipeline Operators", function (t) {
     t.ok(fields.indexOf('name') >= 0, "name is included");
     t.ok(fields.indexOf('_id') === -1, "_id is excluded");
     t.ok(fields.indexOf('scores') >= 0, "score is included");
-    
-    try {
-        result = Mingo.aggregate(
-            students,
-            [
-              {
-                '$project': {
-                  'scores': 0,
-                  'name': 1
-                }
-              },
-              {'$limit': 1}
-            ]
-        );
-    } catch (e) {
-       t.ok(e instanceof Error, "an error was thrown");
-       t.ok(e.message.indexOf("mix") >= 0, "error mentions mix fields");
-    }
   });
 
   t.test("$group operator", function (t) {
-    t.plan(1);
-    var flattened = Mingo.aggregate(students, [
+    t.plan(2);
+    var flattened = Mingo.aggregate(samples.students, [
       {'$unwind': '$scores'}
     ]);
     var grouped = Mingo.aggregate(
-        flattened,
-        [
-          {
-            '$group': {
-              '_id': '$scores.type', 'highest': {$max: '$scores.score'},
-              'lowest': {$min: '$scores.score'}, 'average': {$avg: '$scores.score'}, 'count': {$sum: 1}
-            }
+      flattened,
+      [
+        {
+          '$group': {
+            '_id': '$scores.type', 'highest': {$max: '$scores.score'},
+            'lowest': {$min: '$scores.score'}, 'average': {$avg: '$scores.score'}, 'count': {$sum: 1}
           }
-        ]
+        }
+      ]
     );
     t.ok(grouped.length === 3, "can group collection with $group");
+
+    grouped = Mingo.aggregate(samples.groupByObjectsData, [
+        {"$match": {}}, {
+          "$group": {
+            "_id": {
+              "hour": "$date_buckets.hour",
+              "keyword": "$Keyword"
+            }, "total": {"$sum": 1}
+          }
+        }, {"$sort": {"total": -1}}, {"$limit": 5}, {
+          "$project": {
+            "_id": 0,
+            //"hour": "$_id.hour",
+            "keyword": "$_id.keyword",
+            "total": 1
+          }
+        }]
+    );
+    t.deepEqual(grouped, [
+      {"total": 2, "keyword": "Bathroom Cleaning Tips"},
+      {"total": 1, "keyword": "Cleaning Bathroom Tips"},
+      {"total": 1, "keyword": "best way to clean a bathroom"},
+      {"total": 1, "keyword": "Drain Clogs"},
+      {"total": 1, "keyword": "unclog bathtub drain"}
+    ], "can group by object key");
   });
 
   t.test("$limit operator", function (t) {
     t.plan(1);
-    var result = Mingo.aggregate(students, [
+    var result = Mingo.aggregate(samples.students, [
       {'$limit': 100}
     ]);
     t.ok(result.length === 100, "can limit result with $limit");
@@ -182,15 +184,15 @@ test("Aggregation Pipeline Operators", function (t) {
 
   t.test("$skip operator", function (t) {
     t.plan(1);
-    var result = Mingo.aggregate(students, [
+    var result = Mingo.aggregate(samples.students, [
       {'$skip': 100}
     ]);
-    t.ok(result.length === students.length - 100, "can skip result with $skip");
+    t.ok(result.length === samples.students.length - 100, "can skip result with $skip");
   });
 
   t.test("$sort operator", function (t) {
     t.plan(1);
-    var result = Mingo.aggregate(students, [
+    var result = Mingo.aggregate(samples.students, [
       {'$sort': {'_id': -1}}
     ]);
     t.ok(result[0]['_id'] === 199, "can sort collection with $sort");
@@ -526,3 +528,200 @@ test("Set Operators", function (t) {
   t.end();
 
 });
+
+test("Boolean Operators", function (t) {
+  t.plan(3);
+  var inventory = [
+    {"_id": 1, "item": "abc1", description: "product 1", qty: 300},
+    {"_id": 2, "item": "abc2", description: "product 2", qty: 200},
+    {"_id": 3, "item": "xyz1", description: "product 3", qty: 250},
+    {"_id": 4, "item": "VWZ1", description: "product 4", qty: 300},
+    {"_id": 5, "item": "VWZ2", description: "product 5", qty: 180}
+  ];
+
+  var result = Mingo.aggregate(inventory, [{
+    $project: {
+      item: 1,
+      result: {$and: [{$gt: ["$qty", 100]}, {$lt: ["$qty", 250]}]}
+    }
+  }]);
+
+  t.deepEqual([
+    {"_id": 1, "item": "abc1", "result": false},
+    {"_id": 2, "item": "abc2", "result": true},
+    {"_id": 3, "item": "xyz1", "result": false},
+    {"_id": 4, "item": "VWZ1", "result": false},
+    {"_id": 5, "item": "VWZ2", "result": true}
+  ], result, "can apply $and operator");
+
+  result = Mingo.aggregate(inventory, [{
+    $project: {
+      item: 1,
+      result: {$or: [{$gt: ["$qty", 250]}, {$lt: ["$qty", 200]}]}
+    }
+  }]);
+
+  t.deepEqual([
+    {"_id": 1, "item": "abc1", "result": true},
+    {"_id": 2, "item": "abc2", "result": false},
+    {"_id": 3, "item": "xyz1", "result": false},
+    {"_id": 4, "item": "VWZ1", "result": true},
+    {"_id": 5, "item": "VWZ2", "result": true}
+  ], result, "can apply $or aggregate operator");
+
+  result = Mingo.aggregate(inventory, [{
+    $project: {
+      item: 1,
+      result: {$not: [{$gt: ["$qty", 250]}]}
+    }
+  }]);
+
+  t.deepEqual([
+    {"_id": 1, "item": "abc1", "result": false},
+    {"_id": 2, "item": "abc2", "result": true},
+    {"_id": 3, "item": "xyz1", "result": true},
+    {"_id": 4, "item": "VWZ1", "result": false},
+    {"_id": 5, "item": "VWZ2", "result": true}
+  ], result, "can apply $not aggregate operator");
+
+  t.end();
+});
+
+test("Variable Operators", function (t) {
+  t.plan(2);
+  var result = Mingo.aggregate([
+    {_id: 1, price: 10, tax: 0.50, applyDiscount: true},
+    {_id: 2, price: 10, tax: 0.25, applyDiscount: false}
+  ], [
+    {
+      $project: {
+        finalTotal: {
+          $let: {
+            vars: {
+              total: {$add: ['$price', '$tax']},
+              discounted: {$cond: {if: '$applyDiscount', then: 0.9, else: 1}}
+            },
+            in: {$multiply: ["$$total", "$$discounted"]}
+          }
+        }
+      }
+    }
+  ]);
+
+  t.ok(
+    result[0].finalTotal === 9.450000000000001 && result[1].finalTotal === 10.25,
+    "can apply $let operator"
+  );
+
+  result = Mingo.aggregate([
+    {_id: 1, quizzes: [5, 6, 7]},
+    {_id: 2, quizzes: []},
+    {_id: 3, quizzes: [3, 8, 9]}
+  ], [
+    {
+      $project: {
+        adjustedGrades: {
+          $map: {
+            input: "$quizzes",
+            as: "grade",
+            in: {$add: ["$$grade", 2]}
+          }
+        }
+      }
+    }
+  ]);
+
+  t.deepEqual([
+    {"_id": 1, "adjustedGrades": [7, 8, 9]},
+    {"_id": 2, "adjustedGrades": []},
+    {"_id": 3, "adjustedGrades": [5, 10, 11]}
+  ], result, "can apply $map operator");
+
+  t.end();
+
+});
+
+test("Literal Operators", function (t) {
+  t.plan(1);
+  var result = Mingo.aggregate([
+    {"_id": 1, "item": "abc123", price: "$2.50"},
+    {"_id": 2, "item": "xyz123", price: "1"},
+    {"_id": 3, "item": "ijk123", price: "$1"}
+  ], [{
+    $project: {costsOneDollar: {$eq: ["$price", {$literal: "$1"}]}}
+  }]);
+
+  t.deepEqual([
+    {"_id": 1, "costsOneDollar": false},
+    {"_id": 2, "costsOneDollar": false},
+    {"_id": 3, "costsOneDollar": true}
+  ], result, "can apply $literal operator");
+
+  t.end();
+});
+
+test("Array Operators", function (t) {
+  t.plan(1);
+  var result = Mingo.aggregate([
+    {"_id": 1, "item": "ABC1", "description": "product 1", colors: ["blue", "black", "red"]},
+    {"_id": 2, "item": "ABC2", "description": "product 2", colors: ["purple"]},
+    {"_id": 3, "item": "XYZ1", "description": "product 3", colors: []}
+  ], [{
+    $project: {
+      item: 1,
+      numberOfColors: {$size: "$colors"}
+    }
+  }]);
+
+  t.deepEqual([
+    {"_id": 1, "item": "ABC1", "numberOfColors": 3},
+    {"_id": 2, "item": "ABC2", "numberOfColors": 1},
+    {"_id": 3, "item": "XYZ1", "numberOfColors": 0}
+  ], result, "can apply $size operator");
+
+  t.end();
+});
+
+
+// This test is timezone sensitive.
+
+//test("Date Operators", function (t) {
+//  t.plan(12);
+//
+//  var result = Mingo.aggregate([{
+//    "_id": 1, "item": "abc", "price": 10, "quantity": 2, "date": new Date("2014-01-01T08:15:39.736Z")
+//  }], [{
+//    $project: {
+//      year: {$year: "$date"},
+//      month: {$month: "$date"},
+//      day: {$dayOfMonth: "$date"},
+//      hour: {$hour: "$date"},
+//      minutes: {$minute: "$date"},
+//      seconds: {$second: "$date"},
+//      milliseconds: {$millisecond: "$date"},
+//      dayOfYear: {$dayOfYear: "$date"},
+//      dayOfWeek: {$dayOfWeek: "$date"},
+//      week: {$week: "$date"},
+//      yearMonthDay: {$dateToString: {format: "%Y-%m-%d", date: "$date"}},
+//      time: {$dateToString: {format: "%H:%M:%S:%L", date: "$date"}}
+//    }
+//  }]);
+//
+//  result = result[0];
+//
+//  t.ok(result.year == 2014, "can apply $year");
+//  t.ok(result.month == 1, "can apply $month");
+//  t.ok(result.day == 1, "can apply $day");
+//  t.ok(result.hour == 8, "can apply $hour");
+//  t.ok(result.minutes == 15, "can apply $minutes");
+//  t.ok(result.seconds == 39, "can apply $seconds");
+//  t.ok(result.milliseconds == 736, "can apply $milliseconds");
+//  t.ok(result.dayOfWeek == 4, "can apply $dayOfWeek");
+//  t.ok(result.dayOfYear == 1, "can apply $dayOfYear");
+//  t.ok(result.week == 0, "can apply $week");
+//  t.ok(result.yearMonthDay == "2014-01-01", "formats date to string");
+//  t.ok(result.time == "08:15:39:736", "formats time to string");
+//
+//  t.end();
+//
+//});

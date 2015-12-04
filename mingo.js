@@ -1,7 +1,8 @@
-// Mingo.js 0.4.0
+// Mingo.js 0.6.2
 // Copyright (c) 2015 Francis Asante <kofrasa@gmail.com>
 // MIT
 
+;
 (function (root, undefined) {
 
   "use strict";
@@ -9,6 +10,8 @@
   // global on the server, window in the browser
   var Mingo = {}, previousMingo;
   var _;
+
+  Mingo.VERSION = '0.6.2';
 
   // backup previous Mingo
   if (root != null) {
@@ -23,16 +26,14 @@
   var nativeScriptEnabled = Boolean(((typeof android !== 'undefined' && android && android.widget && android.widget.Button)
   || (typeof UIButton !== 'undefined' && UIButton)));
 
-  var nodeEnabled = ('undefined' !== typeof exports && 'undefined' !== typeof require && 'undefined' === typeof window && !nativeScriptEnabled);
+  var nodeEnabled = ('undefined' !== typeof module && 'undefined' !== typeof require);
 
   var browserifyEnabled = 'undefined' !== typeof exports && 'undefined' !== typeof require;
 
   // Export the Mingo object for Node.js
   if (nodeEnabled || nativeScriptEnabled || browserifyEnabled) {
-    if (typeof module !== 'undefined' && module.exports) {
-      exports = module.exports = Mingo;
-    } else {
-      exports = Mingo;
+    if (typeof module !== 'undefined') {
+      module.exports = Mingo;
     }
     _ = require("underscore"); // get a reference to underscore
   } else {
@@ -45,21 +46,31 @@
     _.isString, _.isBoolean, _.isNumber, _.isDate, _.isNull, _.isRegExp
   ];
 
-  function normalize(expr) {
-    // normalized primitives
+  function isPrimitive(value) {
     for (var i = 0; i < primitives.length; i++) {
-      if (primitives[i](expr)) {
-        if (_.isRegExp(expr)) {
-          return {"$regex": expr};
-        } else {
-          return {"$eq": expr};
-        }
+      if (primitives[i](value)) {
+        return true;
       }
     }
+    return false;
+  }
+
+  /**
+   * Simplify expression for easy evaluation with query operators map
+   * @param expr
+   * @returns {*}
+   */
+  function normalize(expr) {
+
+    // normalized primitives
+    if (isPrimitive(expr)) {
+      return _.isRegExp(expr) ? {"$regex": expr} : {"$eq": expr};
+    }
+
     // normalize object expression
     if (_.isObject(expr)) {
       var keys = _.keys(expr);
-      var notQuery = _.intersection(Ops.queryOperators, keys).length === 0;
+      var notQuery = _.intersection(ops(OP_QUERY), keys).length === 0;
 
       // no valid query operator found, so we do simple comparison
       if (notQuery) {
@@ -144,21 +155,11 @@
     },
 
     _processOperator: function (field, operator, value) {
-      var compiledSelector;
-      if (_.contains(Ops.simpleOperators, operator)) {
-        compiledSelector = {
-          test: function (obj) {
-            var actualValue = resolve(obj, field);
-            // value of operator must already be fully resolved.
-            return simpleOperators[operator](actualValue, value);
-          }
-        };
-      } else if (_.contains(Ops.compoundOperators, operator)) {
-        compiledSelector = compoundOperators[operator](field, value);
+      if (_.contains(ops(OP_QUERY), operator)) {
+        this._compiled.push(queryOperators[operator](field, value));
       } else {
         throw new Error("Invalid query operator '" + operator + "' detected");
       }
-      this._compiled.push(compiledSelector);
     },
 
     /**
@@ -444,14 +445,16 @@
         // run aggregation pipeline
         for (var i = 0; i < this._operators.length; i++) {
           var operator = this._operators[i];
-          for (var key in operator) {
-            if (operator.hasOwnProperty(key)) {
-              if (query instanceof Mingo.Query) {
-                collection = pipelineOperators[key].call(query, collection, operator[key]);
-              } else {
-                collection = pipelineOperators[key](collection, operator[key]);
-              }
+          var key = _.keys(operator);
+          if (key.length == 1 && _.contains(ops(OP_PIPELINE), key[0])) {
+            key = key[0];
+            if (query instanceof Mingo.Query) {
+              collection = pipelineOperators[key].call(query, collection, operator[key]);
+            } else {
+              collection = pipelineOperators[key](collection, operator[key]);
             }
+          } else {
+            throw new Error("Invalid aggregation operator '" + key + "'");
           }
         }
       }
@@ -490,9 +493,7 @@
       if (isText && _.isArray(value)) {
         var res = [];
         _.each(value, function (item) {
-          if (_.isObject(item)) {
-            res.push(resolve(item, names[i]));
-          }
+          res.push(resolve(item, names[i]));
         });
         value = res;
       } else {
@@ -536,9 +537,92 @@
    */
   Mingo.aggregate = function (collection, pipeline) {
     if (!_.isArray(pipeline)) {
-      throw new Error("Aggregation pipeline must be an array")
+      throw new Error("Aggregation pipeline must be an array");
     }
     return (new Mingo.Aggregator(pipeline)).run(collection);
+  };
+
+  /**
+   * Add new operators
+   * @param type the operator type to extend
+   * @param f a function returning an object of new operators
+   */
+  Mingo.addOperators = function (type, f) {
+    var newOperators = f({
+      resolve: resolve,
+      computeValue: computeValue,
+      ops: ops,
+      key: function () {
+        return settings.key;
+      }
+    });
+
+    // ensure correct type specified
+    if (!_.contains([OP_AGGREGATE, OP_GROUP, OP_PIPELINE, OP_PROJECTION, OP_QUERY], type)) {
+      throw new Error("Could not identify type '" + type + "'");
+    }
+
+    var operators = ops(type);
+
+    // check for existing operators
+    _.each(_.keys(newOperators), function (op) {
+      if (!/^\$\w+$/.test(op)) {
+        throw new Error("Invalid operator name '" + op + "'");
+      }
+      if (_.contains(operators, op)) {
+        throw new Error("Operator " + op + " is already defined for " + type + " operators");
+      }
+    });
+
+    var wrapped = {};
+
+    switch (type) {
+      case OP_QUERY:
+        _.each(_.keys(newOperators), function (op) {
+          wrapped[op] = (function (f, ctx) {
+            return function (selector, value) {
+              return {
+                test: function (obj) {
+                  // value of field must be fully resolved.
+                  var lhs = resolve(obj, selector);
+                  var result = f.call(ctx, selector, lhs, value);
+                  if (_.isBoolean(result)) {
+                    return result;
+                  } else if (result instanceof Mingo.Query) {
+                    return result.test(obj);
+                  } else {
+                    throw new Error("Invalid return type for '" + op + "'. Must return a Boolean or Mingo.Query");
+                  }
+                }
+              };
+            }
+          }(newOperators[op], newOperators));
+        });
+        break;
+      case OP_PROJECTION:
+        _.each(_.keys(newOperators), function (op) {
+          wrapped[op] = (function (f, ctx) {
+            return function (obj, expr, selector) {
+              var lhs = resolve(obj, selector);
+              return f.call(ctx, selector, lhs, expr);
+            }
+          }(newOperators[op], newOperators));
+        });
+        break;
+      default:
+        _.each(_.keys(newOperators), function (op) {
+          wrapped[op] = (function (f, ctx) {
+            return function () {
+              var args = Array.prototype.slice.call(arguments);
+              return f.apply(ctx, args);
+            }
+          }(newOperators[op], newOperators));
+        });
+    }
+
+    // toss the operator salad :)
+    _.extend(OPERATORS[type], wrapped);
+
   };
 
   /**
@@ -578,28 +662,28 @@
     $group: function (collection, expr) {
       // lookup key for grouping
       var idKey = expr[settings.key];
-      var indexes = [];
-      // group collection by key
-      var groups = _.groupBy(collection, function (obj) {
-        var key = computeValue(obj, idKey, idKey);
-        indexes.push(key);
-        return key;
+
+      var partitions = groupBy(collection, function (obj) {
+        return computeValue(obj, idKey, idKey);
       });
 
-      // group indexes
-      indexes = _.uniq(indexes);
+      var result = [];
 
       // remove the group key
       expr = _.omit(expr, settings.key);
 
-      var result = [];
-      _.each(indexes, function (index) {
+      _.each(partitions.keys, function (value, i) {
         var obj = {};
-        obj[settings.key] = index;
+
+        // exclude undefined key value
+        if (!_.isUndefined(value)) {
+          obj[settings.key] = value;
+        }
+
         // compute remaining keys in expression
         for (var key in expr) {
           if (expr.hasOwnProperty(key)) {
-            obj[key] = accumulate(groups[index], key, expr[key]);
+            obj[key] = accumulate(partitions.groups[i], key, expr[key]);
           }
         }
         result.push(obj);
@@ -662,6 +746,7 @@
       }
 
       for (var i = 0; i < collection.length; i++) {
+
         var obj = collection[i];
         var cloneObj = {};
         var foundSlice = false;
@@ -670,6 +755,7 @@
         if (idOnlyExcludedExpression) {
           dropKeys.push(settings.key);
         }
+
         _.each(objKeys, function (key) {
 
           var subExpr = expr[key];
@@ -688,7 +774,7 @@
           } else if (_.isObject(subExpr)) {
             var operator = _.keys(subExpr);
             operator = operator.length > 1 ? false : operator[0];
-            if (operator !== false && _.contains(Ops.projectionOperators, operator)) {
+            if (operator !== false && _.contains(ops(OP_PROJECTION), operator)) {
               // apply the projection operator on the operator expression for the key
               var temp = projectionOperators[operator](obj, subExpr[operator], key);
               if (!_.isUndefined(temp)) {
@@ -705,8 +791,8 @@
             dropKeys.push(key);
           }
 
-          if (newValue !== undefined) {
-            cloneObj[key] = _.isObject(newValue) ? _.clone(newValue) : newValue;
+          if (!_.isUndefined(newValue)) {
+            cloneObj[key] = newValue;
           }
         });
         // if projection included $slice operator
@@ -802,6 +888,9 @@
       return collection;
     }
   };
+
+  ////////// QUERY OPERATORS //////////
+  var queryOperators = {};
 
   var compoundOperators = {
 
@@ -918,6 +1007,9 @@
 
   };
 
+  // add compound query operators
+  _.extend(queryOperators, compoundOperators);
+
   var simpleOperators = {
 
     /**
@@ -928,7 +1020,8 @@
      * @returns {*}
      */
     $eq: function (a, b) {
-      a = _.isArray(a) ? a : [a];
+      // flatten to reach nested values. fix for https://github.com/kofrasa/mingo/issues/19
+      a = _.flatten(_.isArray(a) ? a : [a]);
       a = _.find(a, function (val) {
         return _.isEqual(val, b);
       });
@@ -1156,8 +1249,21 @@
           return false;
       }
     }
-
   };
+  // add simple query operators
+  _.each(_.keys(simpleOperators), function (op) {
+    queryOperators[op] = (function (f, ctx) {
+      return function (selector, value) {
+        return {
+          test: function (obj) {
+            // value of field must be fully resolved.
+            var lhs = resolve(obj, selector);
+            return f.call(ctx, lhs, value);
+          }
+        };
+      }
+    }(simpleOperators[op], simpleOperators));
+  });
 
   var projectionOperators = {
 
@@ -1238,7 +1344,7 @@
      */
     $addToSet: function (collection, expr) {
       var result = _.map(collection, function (obj) {
-        return computeValue(obj, expr);
+        return computeValue(obj, expr, null);
       });
       return _.uniq(result);
     },
@@ -1251,13 +1357,16 @@
      * @returns {*}
      */
     $sum: function (collection, expr) {
+      if (!_.isArray(collection)) {
+        return 0;
+      }
       if (_.isNumber(expr)) {
         // take a short cut if expr is number literal
         return collection.length * expr;
       }
       return _.reduce(collection, function (acc, obj) {
         // pass empty field to avoid naming conflicts with fields on documents
-        return acc + computeValue(obj, expr);
+        return acc + computeValue(obj, expr, null);
       }, 0);
     },
 
@@ -1270,9 +1379,9 @@
      */
     $max: function (collection, expr) {
       var obj = _.max(collection, function (obj) {
-        return computeValue(obj, expr);
+        return computeValue(obj, expr, null);
       });
-      return computeValue(obj, expr);
+      return computeValue(obj, expr, null);
     },
 
     /**
@@ -1284,9 +1393,9 @@
      */
     $min: function (collection, expr) {
       var obj = _.min(collection, function (obj) {
-        return computeValue(obj, expr);
+        return computeValue(obj, expr, null);
       });
-      return computeValue(obj, expr);
+      return computeValue(obj, expr, null);
     },
 
     /**
@@ -1309,7 +1418,7 @@
      */
     $push: function (collection, expr) {
       return _.map(collection, function (obj) {
-        return computeValue(obj, expr);
+        return computeValue(obj, expr, null);
       });
     },
 
@@ -1337,7 +1446,7 @@
   };
 
 
-  /////////// Common Aggregation Operators ///////////
+  /////////// Aggregation Operators ///////////
 
   var arithmeticOperators = {
 
@@ -1349,7 +1458,7 @@
      * @returns {Object}
      */
     $add: function (obj, expr) {
-      var args = computeValue(obj, expr);
+      var args = computeValue(obj, expr, null);
       return _.reduce(args, function (memo, num) {
         return memo + num;
       }, 0);
@@ -1363,7 +1472,7 @@
      * @returns {number}
      */
     $subtract: function (obj, expr) {
-      var args = computeValue(obj, expr);
+      var args = computeValue(obj, expr, null);
       return args[0] - args[1];
     },
 
@@ -1375,7 +1484,7 @@
      * @returns {number}
      */
     $divide: function (obj, expr) {
-      var args = computeValue(obj, expr);
+      var args = computeValue(obj, expr, null);
       return args[0] / args[1];
     },
 
@@ -1387,7 +1496,7 @@
      * @returns {Object}
      */
     $multiply: function (obj, expr) {
-      var args = computeValue(obj, expr);
+      var args = computeValue(obj, expr, null);
       return _.reduce(args, function (memo, num) {
         return memo * num;
       }, 1);
@@ -1401,7 +1510,7 @@
      * @returns {number}
      */
     $mod: function (obj, expr) {
-      var args = computeValue(obj, expr);
+      var args = computeValue(obj, expr, null);
       return args[0] % args[1];
     }
   };
@@ -1416,7 +1525,7 @@
      * @returns {string|*}
      */
     $concat: function (obj, expr) {
-      var args = computeValue(obj, expr);
+      var args = computeValue(obj, expr, null);
       // does not allow concatenation with nulls
       if (_.contains(args, null) || _.contains(args, undefined)) {
         return null;
@@ -1432,7 +1541,7 @@
      * @returns {number}
      */
     $strcasecmp: function (obj, expr) {
-      var args = computeValue(obj, expr);
+      var args = computeValue(obj, expr, null);
       args[0] = _.isEmpty(args[0]) ? "" : args[0].toUpperCase();
       args[1] = _.isEmpty(args[1]) ? "" : args[1].toUpperCase();
       if (args[0] > args[1]) {
@@ -1450,7 +1559,7 @@
      * @returns {string}
      */
     $substr: function (obj, expr) {
-      var args = computeValue(obj, expr);
+      var args = computeValue(obj, expr, null);
       if (_.isString(args[0])) {
         if (args[1] < 0) {
           return "";
@@ -1471,7 +1580,7 @@
      * @returns {string}
      */
     $toLower: function (obj, expr) {
-      var value = computeValue(obj, expr);
+      var value = computeValue(obj, expr, null);
       return _.isEmpty(value) ? "" : value.toLowerCase();
     },
 
@@ -1483,7 +1592,7 @@
      * @returns {string}
      */
     $toUpper: function (obj, expr) {
-      var value = computeValue(obj, expr);
+      var value = computeValue(obj, expr, null);
       return _.isEmpty(value) ? "" : value.toUpperCase();
     }
   };
@@ -1495,8 +1604,8 @@
      * @param expr
      */
     $dayOfYear: function (obj, expr) {
-      var d = computeValue(obj, expr);
-      if (_.isDate(value)) {
+      var d = computeValue(obj, expr, null);
+      if (_.isDate(d)) {
         var start = new Date(d.getFullYear(), 0, 0);
         var diff = d - start;
         var oneDay = 1000 * 60 * 60 * 24;
@@ -1511,7 +1620,7 @@
      * @param expr
      */
     $dayOfMonth: function (obj, expr) {
-      var d = computeValue(obj, expr);
+      var d = computeValue(obj, expr, null);
       return _.isDate(d) ? d.getDate() : undefined;
     },
 
@@ -1521,7 +1630,7 @@
      * @param expr
      */
     $dayOfWeek: function (obj, expr) {
-      var d = computeValue(obj, expr);
+      var d = computeValue(obj, expr, null);
       return _.isDate(d) ? d.getDay() + 1 : undefined;
     },
 
@@ -1531,8 +1640,8 @@
      * @param expr
      */
     $year: function (obj, expr) {
-      var d = computeValue(obj, expr);
-      return _.isDate(d) ? d.getFullYear() + 1 : undefined;
+      var d = computeValue(obj, expr, null);
+      return _.isDate(d) ? d.getFullYear() : undefined;
     },
 
     /**
@@ -1541,7 +1650,7 @@
      * @param expr
      */
     $month: function (obj, expr) {
-      var d = computeValue(obj, expr);
+      var d = computeValue(obj, expr, null);
       return _.isDate(d) ? d.getMonth() + 1 : undefined;
     },
 
@@ -1552,9 +1661,19 @@
      * @param expr
      */
     $week: function (obj, expr) {
-      var d = computeValue(obj, expr);
-      // TODO
-      throw new Error("Not Implemented");
+      // source: http://stackoverflow.com/a/6117889/1370481
+      var d = computeValue(obj, expr, null);
+
+      // Copy date so don't modify original
+      d = new Date(+d);
+      d.setHours(0, 0, 0);
+      // Set to nearest Thursday: current date + 4 - current day number
+      // Make Sunday's day number 7
+      d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+      // Get first day of year
+      var yearStart = new Date(d.getFullYear(), 0, 1);
+      // Calculate full weeks to nearest Thursday
+      return Math.floor(( ( (d - yearStart) / 8.64e7) + 1) / 7);
     },
 
     /**
@@ -1563,7 +1682,7 @@
      * @param expr
      */
     $hour: function (obj, expr) {
-      var d = computeValue(obj, expr);
+      var d = computeValue(obj, expr, null);
       return _.isDate(d) ? d.getHours() : undefined;
     },
 
@@ -1573,7 +1692,7 @@
      * @param expr
      */
     $minute: function (obj, expr) {
-      var d = computeValue(obj, expr);
+      var d = computeValue(obj, expr, null);
       return _.isDate(d) ? d.getMinutes() : undefined;
     },
 
@@ -1583,7 +1702,7 @@
      * @param expr
      */
     $second: function (obj, expr) {
-      var d = computeValue(obj, expr);
+      var d = computeValue(obj, expr, null);
       return _.isDate(d) ? d.getSeconds() : undefined;
     },
 
@@ -1593,33 +1712,49 @@
      * @param expr
      */
     $millisecond: function (obj, expr) {
-      var d = computeValue(obj, expr);
+      var d = computeValue(obj, expr, null);
       return _.isDate(d) ? d.getMilliseconds() : undefined;
     },
 
     /**
      * Returns the date as a formatted string.
-     * @param obj
-     * @param expr
+     *
+     * %Y  Year (4 digits, zero padded)  0000-9999
+     * %m  Month (2 digits, zero padded)  01-12
+     * %d  Day of Month (2 digits, zero padded)  01-31
+     * %H  Hour (2 digits, zero padded, 24-hour clock)  00-23
+     * %M  Minute (2 digits, zero padded)  00-59
+     * %S  Second (2 digits, zero padded)  00-60
+     * %L  Millisecond (3 digits, zero padded)  000-999
+     * %j  Day of year (3 digits, zero padded)  001-366
+     * %w  Day of week (1-Sunday, 7-Saturday)  1-7
+     * %U  Week of year (2 digits, zero padded)  00-53
+     * %%  Percent Character as a Literal  %
+     *
+     * @param obj current object
+     * @param expr operator expression
      */
     $dateToString: function (obj, expr) {
+
       var fmt = expr['format'];
-      var date = computeValue(obj, expr['date']);
-      // TODO: use python-style date formatting
-      /*
-       %Y	Year (4 digits, zero padded)	0000-9999
-       %m	Month (2 digits, zero padded)	01-12
-       %d	Day of Month (2 digits, zero padded)	01-31
-       %H	Hour (2 digits, zero padded, 24-hour clock)	00-23
-       %M	Minute (2 digits, zero padded)	00-59
-       %S	Second (2 digits, zero padded)	00-60
-       %L	Millisecond (3 digits, zero padded)	000-999
-       %j	Day of year (3 digits, zero padded)	001-366
-       %w	Day of week (1-Sunday, 7-Saturday)	1-7
-       %U	Week of year (2 digits, zero padded)	00-53
-       %%	Percent Character as a Literal	%
-       */
-      throw new Error("Not Implemented");
+      var date = computeValue(obj, expr['date'], null);
+      var matches = fmt.match(/(%%|%Y|%m|%d|%H|%M|%S|%L|%j|%w|%U)/g);
+
+      for (var i = 0, len = matches.length; i < len; i++) {
+        var hdlr = DATE_SYM_TABLE[matches[i]];
+        var value = hdlr;
+
+        if (_.isArray(hdlr)) {
+          // reuse date operators
+          var fn = this[hdlr[0]];
+          var pad = hdlr[1];
+          value = padDigits(fn.call(this, obj, date), pad);
+        }
+        // replace the match with resolved value
+        fmt = fmt.replace(matches[i], value);
+      }
+
+      return fmt;
     }
   };
 
@@ -1630,7 +1765,7 @@
      * @param expr
      */
     $setEquals: function (obj, expr) {
-      var args = computeValue(obj, expr);
+      var args = computeValue(obj, expr, null);
       var first = _.uniq(args[0]);
       var second = _.uniq(args[1]);
       if (first.length !== second.length) {
@@ -1645,7 +1780,7 @@
      * @param expr
      */
     $setIntersection: function (obj, expr) {
-      var args = computeValue(obj, expr);
+      var args = computeValue(obj, expr, null);
       return _.intersection(args[0], args[1]);
     },
 
@@ -1655,7 +1790,7 @@
      * @param expr
      */
     $setDifference: function (obj, expr) {
-      var args = computeValue(obj, expr);
+      var args = computeValue(obj, expr, null);
       return _.difference(args[0], args[1]);
     },
 
@@ -1665,7 +1800,7 @@
      * @param expr
      */
     $setUnion: function (obj, expr) {
-      var args = computeValue(obj, expr);
+      var args = computeValue(obj, expr, null);
       return _.union(args[0], args[1]);
     },
 
@@ -1675,7 +1810,7 @@
      * @param expr
      */
     $setIsSubset: function (obj, expr) {
-      var args = computeValue(obj, expr);
+      var args = computeValue(obj, expr, null);
       return _.intersection(args[0], args[1]).length === args[0].length;
     },
 
@@ -1686,7 +1821,7 @@
      */
     $anyElementTrue: function (obj, expr) {
       // mongodb nests the array expression in another
-      var args = computeValue(obj, expr)[0];
+      var args = computeValue(obj, expr, null)[0];
       for (var i = 0; i < args.length; i++) {
         if (!!args[i])
           return true;
@@ -1701,7 +1836,7 @@
      */
     $allElementsTrue: function (obj, expr) {
       // mongodb nests the array expression in another
-      var args = computeValue(obj, expr)[0];
+      var args = computeValue(obj, expr, null)[0];
       for (var i = 0; i < args.length; i++) {
         if (!args[i])
           return false;
@@ -1733,8 +1868,8 @@
         thenExpr = expr['then'];
         elseExpr = expr['else'];
       }
-      var condition = computeValue(obj, ifExpr);
-      return condition ? computeValue(obj, thenExpr) : computeValue(obj, elseExpr);
+      var condition = computeValue(obj, ifExpr, null);
+      return condition ? computeValue(obj, thenExpr, null) : computeValue(obj, elseExpr, null);
     },
 
     /**
@@ -1749,7 +1884,7 @@
       if (!_.isArray(expr) || expr.length != 2) {
         throw new Error("Invalid arguments for $ifNull operator");
       }
-      var args = computeValue(obj, expr);
+      var args = computeValue(obj, expr, null);
       return (args[0] === null || args[0] === undefined) ? args[1] : args[0];
     }
   };
@@ -1763,42 +1898,253 @@
      * @returns {number}
      */
     $cmp: function (obj, expr) {
-      var args = computeValue(obj, expr);
+      var args = computeValue(obj, expr, null);
       if (args[0] > args[1]) {
         return 1;
       }
       return (args[0] < args[1]) ? -1 : 0;
     }
   };
-
-  // combine aggregate operators
-  var aggregateOperators = _.extend(
-      {},
-      arithmeticOperators,
-      comparisonOperators,
-      conditionalOperators,
-      dateOperators,
-      setOperators,
-      stringOperators
-  );
-
   // mixin comparison operators
   _.each(["$eq", "$ne", "$gt", "$gte", "$lt", "$lte"], function (op) {
-    aggregateOperators[op] = function (obj, expr) {
-      var args = computeValue(obj, expr);
+    comparisonOperators[op] = function (obj, expr) {
+      var args = computeValue(obj, expr, null);
       return simpleOperators[op](args[0], args[1]);
     };
   });
 
-  var Ops = {
-    simpleOperators: _.keys(simpleOperators),
-    compoundOperators: _.keys(compoundOperators),
-    aggregateOperators: _.keys(aggregateOperators),
-    groupOperators: _.keys(groupOperators),
-    pipelineOperators: _.keys(pipelineOperators),
-    projectionOperators: _.keys(projectionOperators)
+  var arrayOperators = {
+    /**
+     * Counts and returns the total the number of items in an array.
+     * @param obj
+     * @param expr
+     */
+    $size: function (obj, expr) {
+      var value = computeValue(obj, expr, null);
+      return _.isArray(value) ? value.length : undefined;
+    }
   };
-  Ops.queryOperators = _.union(Ops.simpleOperators, Ops.compoundOperators);
+
+  var literalOperators = {
+    /**
+     * Return a value without parsing.
+     * @param obj
+     * @param expr
+     */
+    $literal: function (obj, expr) {
+      return expr;
+    }
+  };
+
+
+  var variableOperators = {
+    /**
+     * Applies a subexpression to each element of an array and returns the array of resulting values in order.
+     * @param obj
+     * @param expr
+     * @returns {Array|*}
+     */
+    $map: function (obj, expr) {
+      var inputExpr = computeValue(obj, expr["input"], null);
+      if (!_.isArray(inputExpr)) {
+        throw new Error("Input expression for $map must resolve to an array");
+      }
+      var asExpr = expr["as"];
+      var inExpr = expr["in"];
+
+      // HACK: add the "as" expression as a value on the object to take advantage of "resolve()"
+      // which will reduce to that value when invoked. The reference to the as expression will be prefixed with "$$".
+      // But since a "$" is stripped of before passing the name to "resolve()" we just need to prepend "$" to the key.
+      var tempKey = "$" + asExpr;
+      // let's save any value that existed, kinda useless but YOU CAN NEVER BE TOO SURE, CAN YOU :)
+      var original = obj[tempKey];
+      return _.map(inputExpr, function (item) {
+        obj[tempKey] = item;
+        var value = computeValue(obj, inExpr, null);
+        // cleanup and restore
+        if (_.isUndefined(original)) {
+          delete obj[tempKey];
+        } else {
+          obj[tempKey] = original;
+        }
+        return value;
+      });
+
+    },
+
+    /**
+     * Defines variables for use within the scope of a subexpression and returns the result of the subexpression.
+     * @param obj
+     * @param expr
+     * @returns {*}
+     */
+    $let: function (obj, expr) {
+      var varsExpr = expr["vars"];
+      var inExpr = expr["in"];
+
+      // resolve vars
+      var originals = {};
+      var varsKeys = _.keys(varsExpr);
+      _.each(varsKeys, function (key) {
+        var val = computeValue(obj, varsExpr[key], null);
+        var tempKey = "$" + key;
+        // set value on object using same technique as in "$map"
+        originals[tempKey] = obj[tempKey];
+        obj[tempKey] = val;
+      });
+
+      var value = computeValue(obj, inExpr, null);
+
+      // cleanup and restore
+      _.each(varsKeys, function (key) {
+        var tempKey = "$" + key;
+        if (_.isUndefined(originals[tempKey])) {
+          delete obj[tempKey];
+        } else {
+          obj[tempKey] = originals[tempKey];
+        }
+      });
+
+      return value;
+    }
+  };
+
+  var booleanOperators = {
+    /**
+     * Returns true only when all its expressions evaluate to true. Accepts any number of argument expressions.
+     * @param obj
+     * @param expr
+     * @returns {boolean}
+     */
+    $and: function (obj, expr) {
+      var value = computeValue(obj, expr, null);
+      return _.every(value);
+    },
+
+    /**
+     * Returns true when any of its expressions evaluates to true. Accepts any number of argument expressions.
+     * @param obj
+     * @param expr
+     * @returns {boolean}
+     */
+    $or: function (obj, expr) {
+      var value = computeValue(obj, expr, null);
+      return _.some(value);
+    },
+
+    /**
+     * Returns the boolean value that is the opposite of its argument expression. Accepts a single argument expression.
+     * @param obj
+     * @param expr
+     * @returns {boolean}
+     */
+    $not: function (obj, expr) {
+      return !computeValue(obj, expr[0], null);
+    }
+  };
+
+  // combine aggregate operators
+  var aggregateOperators = _.extend(
+    {},
+    arrayOperators,
+    arithmeticOperators,
+    booleanOperators,
+    comparisonOperators,
+    conditionalOperators,
+    dateOperators,
+    literalOperators,
+    setOperators,
+    stringOperators,
+    variableOperators
+  );
+
+  var OP_QUERY = Mingo.OP_QUERY = 'query',
+    OP_GROUP = Mingo.OP_GROUP = 'group',
+    OP_AGGREGATE = Mingo.OP_AGGREGATE = 'aggregate',
+    OP_PIPELINE = Mingo.OP_PIPELINE = 'pipeline',
+    OP_PROJECTION = Mingo.OP_PROJECTION = 'projection';
+
+  // operator definitions
+  var OPERATORS = {
+    'aggregate': aggregateOperators,
+    'group': groupOperators,
+    'pipeline': pipelineOperators,
+    'projection': projectionOperators,
+    'query': queryOperators
+  };
+
+  // used for formatting dates in $dateToString operator
+  var DATE_SYM_TABLE = {
+    '%Y': ['$year', 4],
+    '%m': ['$month', 2],
+    '%d': ['$dayOfMonth', 2],
+    '%H': ['$hour', 2],
+    '%M': ['$minute', 2],
+    '%S': ['$second', 2],
+    '%L': ['$millisecond', 3],
+    '%j': ['$dayOfYear', 3],
+    '%w': ['$dayOfWeek', 1],
+    '%U': ['$week', 2],
+    '%%': '%'
+  };
+
+  function padDigits(number, digits) {
+    return new Array(Math.max(digits - String(number).length + 1, 0)).join('0') + number;
+  }
+
+  /**
+   * Return the registered operators on the given operator category
+   * @param type catgory of operators
+   * @returns {*}
+   */
+  function ops(type) {
+    return _.keys(OPERATORS[type]);
+  }
+
+  /**
+   * Groups the collection into sets by the returned key
+   *
+   * @param collection
+   * @param fn
+   */
+  function groupBy(collection, fn) {
+
+    var result = {
+      'keys': [],
+      'groups': []
+    };
+
+    _.each(collection, function (obj) {
+
+      var key = fn(obj);
+      var index = -1;
+
+      if (_.isObject(key)) {
+        for (var i = 0; i < result.keys.length; i++) {
+          if (_.isEqual(key, result.keys[i])) {
+            index = i;
+            break;
+          }
+        }
+      } else {
+        index = _.indexOf(result.keys, key);
+      }
+
+      if (index > -1) {
+        result.groups[index].push(obj);
+      } else {
+        result.keys.push(key);
+        result.groups.push([obj]);
+      }
+    });
+
+    // assert this
+    if (result.keys.length !== result.groups.length) {
+      throw new Error("assert groupBy(): keys.length !== groups.length");
+    }
+
+    return result;
+  }
 
   /**
    * Returns the result of evaluating a $group operation over a collection
@@ -1809,7 +2155,7 @@
    * @returns {*}
    */
   function accumulate(collection, field, expr) {
-    if (_.contains(Ops.groupOperators, field)) {
+    if (_.contains(ops(OP_GROUP), field)) {
       return groupOperators[field](collection, expr);
     }
 
@@ -1820,7 +2166,7 @@
           result[key] = accumulate(collection, key, expr[key]);
           // must run ONLY one group operator per expression
           // if so, return result of the computed value
-          if (_.contains(Ops.groupOperators, key)) {
+          if (_.contains(ops(OP_GROUP), key)) {
             result = result[key];
             // if there are more keys in expression this is bad
             if (_.keys(expr).length > 1) {
@@ -1847,7 +2193,7 @@
   function computeValue(obj, expr, field) {
 
     // if the field of the object is a valid operator
-    if (_.contains(Ops.aggregateOperators, field)) {
+    if (_.contains(ops(OP_AGGREGATE), field)) {
       return aggregateOperators[field](obj, expr);
     }
 
@@ -1859,11 +2205,13 @@
 
     var result;
 
-    if (_.isArray(expr)) {
-      result = [];
-      for (var i = 0; i < expr.length; i++) {
-        result.push(computeValue(obj, expr[i], null));
-      }
+    // check and return value if already in a resolved state
+    if (isPrimitive(expr)) {
+      return expr;
+    } else if (_.isArray(expr)) {
+      result = _.map(expr, function (item) {
+        return computeValue(obj, item, null);
+      });
     } else if (_.isObject(expr)) {
       result = {};
       for (var key in expr) {
@@ -1872,7 +2220,7 @@
 
           // must run ONLY one aggregate operator per expression
           // if so, return result of the computed value
-          if (_.contains(Ops.aggregateOperators, key)) {
+          if (_.contains(ops(OP_AGGREGATE), key)) {
             result = result[key];
             // if there are more keys in expression this is bad
             if (_.keys(expr).length > 1) {
@@ -1880,13 +2228,6 @@
             }
             break;
           }
-        }
-      }
-    } else {
-      // check and return value if already in a resolved state
-      for (var i = 0; i < primitives.length; i++) {
-        if (primitives[i](expr)) {
-          return expr;
         }
       }
     }
